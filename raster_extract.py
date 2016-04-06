@@ -327,7 +327,7 @@ def generate_band(folder):
 	newlist = [header]
 
 	# getting corner points
-	corners = generate_corners('meta')
+	corners = generate_corners(folder)
 
 	# getting iterables of top and bottom points
 	toppoints,bottompoints = generate_horizontal_ranges(corners,len(datacolumns))
@@ -382,4 +382,169 @@ def generate_band(folder):
 	newlist = newlist[(newlist.BLUE > 0)|(newlist.RED > 0)|(newlist.GREEN > 0)]
 	newlist.to_csv('point_band_tiff.csv',index = False)
 
+# gets mins from a list
+def get_min(list):
+	minimum = 1000
+	for row in list:
+		if float(row) < minimum:
+			minimum = float(row)
+	return minimum
 
+# gets max from a list
+def get_max(list):
+	maximum = -1000
+	for row in list:
+		if float(row) > maximum:
+			maximum = float(row)
+	return maximum
+
+# gets extrema from a geohash and table of geohashs
+def get_extrema_geohash(geohash,data):
+	data = data[data.GEOHASH == geohash]
+	header = data.columns.values.tolist()
+	data = data.values.tolist()
+
+	lats = []
+	longs = []
+	for a,b in itertools.izip(header,data[0]):
+		if 'LAT' in a:
+			lats.append(b)
+		elif 'LONG' in a:
+			longs.append(b)
+
+
+	latmin,latmax = get_min(lats),get_max(lats)
+	longmin,longmax = get_min(longs),get_max(longs)
+
+	extremadict = {'n':latmax,'s':latmin,'w':longmin,'e':longmax}
+
+	return extremadict
+
+
+# generate equivalent 
+def generate_equilivalent(value,dimmension,min,max):
+	top = value - min 
+	bottom = max - min
+	ratio = float(top)/float(bottom)
+	value = ratio * dimmension
+	value = round(value,0)
+	return int(value)
+
+
+# generate equivalent for y values where they start at 0 and go down
+def generate_equilivalent2(value,dimmension,min,max,intialmax):
+	top = value - min
+	bottom = max - min
+	ratio = float(top)/float(bottom)
+	value = (1-ratio) * dimmension
+	value = round(value,0)
+	return int(value)
+
+# given a rbg filename and an extrema returns corresponding rows and points for 
+# for values that lie within extrema for the image in question
+def generate_point_range(dims,folder,extremadict):
+	# getting corners 
+	corners = generate_corners(folder)
+	initialmax = corners[1]
+	initialmax = initialmax[1]
+
+	# getting min longs  and translating column values
+	corners = pd.DataFrame(corners[1:],columns = corners[0])
+	longmin,longmax = corners['LONG'].min(),corners['LONG'].max()
+	dimmensionx = dims[1]
+
+	# getting range that extrema dict falls within
+	x1 = generate_equilivalent(extremadict['w'],dimmensionx,longmin,longmax)
+	x2 = generate_equilivalent(extremadict['e'],dimmensionx,longmin,longmax)
+
+	# getting min latsand translating to index values
+	latmin,latmax = corners['LAT'].min(),corners['LAT'].max()
+	dimmensiony = dims[0]
+
+	y1 = generate_equilivalent2(extremadict['n'],dimmensiony,latmin,latmax,initialmax)
+	y2 = generate_equilivalent2(extremadict['s'],dimmensiony,latmin,latmax,initialmax)
+
+	return [x1,x2,y1,y2]
+
+# gets the rgb color band csv file for a pre-allocated tif band image file
+def generate_band_extrema(folder,extrema):
+	# getting image filenames 
+	images = get_images(folder)
+
+	# generating bands
+	bands = generate_bands(images)
+
+	# generating imageframes
+	imageframe = generate_rgb_array(images)
+
+	# generating shape ranges (previously columns and indexs)
+	dims = imageframe.shape
+	datacolumns = range(0,dims[1])
+	dataindex = range(0,dims[0])
+
+
+	# generating indices for the extrema given
+	x1,x2,y1,y2 = generate_point_range(dims,folder,extrema)
+	print x1,x2,y1,y2
+
+	# setting up newlists header
+	header = ['X','Y','LONG','LAT','GEOHASH','RED','GREEN','BLUE']
+	newlist = [header]
+
+	# getting corner points
+	corners = generate_corners(folder)
+
+	# getting iterables of top and bottom points
+	toppoints,bottompoints = generate_horizontal_ranges(corners,len(datacolumns))
+
+	# creating generators for toppoints, bottompoints, and datacolumns
+	genertop = gener(toppoints[1+x1:1+x2])
+	generbottom = gener(bottompoints[1+x1:1+x2])
+	genercolumns = gener(datacolumns[x1:x2])
+
+	start = time.time()
+	toppoints = []
+	bottompoints =[]
+	datacolumns = []
+
+	indouter = 0 
+	while indouter == 0:
+		try:
+			# getting row position and setting up generator
+			x = next(genercolumns)
+			toppoint = next(genertop)
+			bottompoint = next(generbottom)
+
+			# setting up generator for index
+			generx = gener(dataindex)
+
+			# getting points horizontal and setting up generator
+			pointsindex = generate_vertical_ranges(toppoint,bottompoint,len(dataindex))
+
+			# setting up generator to iterate through the y values
+			generpoints = gener(pointsindex[1+y1:1+y2])
+
+			# getting the size of points index
+			indexsize = len(pointsindex[1+y1:1+y2])
+			pointsindex = []
+
+			ind = 0
+			while ind == 0:
+				try:
+					y = next(generx)
+					point = next(generpoints)
+					hash = geohash.encode(float(point[1]), float(point[0]),7)
+					values = generate_intensities3(imageframe,x,y).tolist()
+					newlist.append([x,y,point[0],point[1],hash]+values)
+				except StopIteration:
+					ind = 1
+					print '[%s/%s]' % (x,indexsize)
+		except StopIteration:
+			indouter = 1
+
+
+	newlist=bl.list2df(newlist)
+	print newlist
+	newlist = newlist[(newlist.BLUE > 0)|(newlist.RED > 0)|(newlist.GREEN > 0)]
+	newlist.to_csv('point_band_tiff.csv',index = False)
+	return newlist
