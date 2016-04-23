@@ -6,6 +6,9 @@ import itertools
 import time
 import os
 import geohash
+import pyproj
+from math import radians, degrees
+import math
 
 
 # reads the metadata txt file into memory and splits into constituent lines
@@ -14,6 +17,37 @@ def read_meta(metafile):
 		f=f.read()
 		f= str.split(f,'\n')
 	return f 
+
+# function for getting the wrs row and path  
+def get_wrs_row_path(metalines):
+	for row in metalines:
+		if 'WRS_PATH' in str(row):
+			path = int(str.split(row,' ')[-1])
+		if 'WRS_ROW' in str(row):
+			rowwrs = int(str.split(row,' ')[-1])
+	return [rowwrs,path]
+
+# function for getting the row and path values within the metadata file
+def generate_wrs_rowpath(dir):
+	metafile = get_metafile(dir)
+	meta_lines = read_meta(metafile)
+	rowpath = get_wrs_row_path(meta_lines)
+	return rowpath
+
+# projects points to the correct cordinate system
+def project_point(pointX,pointY,crs):
+	# Spatial Reference System
+	inputEPSG = crs
+	outputEPSG = 4326
+
+	p1 = pyproj.Proj(init='epsg:'+str(inputEPSG), preserve_units=True)
+	pointX,pointY = p1(pointX, pointY)
+	p2 = pyproj.Proj(init='epsg:'+str(outputEPSG),proj='latlong')
+
+	#pointX,pointY=p1(pointX,pointY)
+	x,y = pyproj.transform(p1,p2,pointX,pointY)
+
+	return [x,y]
 
 # returns a list of the corner points of the image from teh meta data txt file
 def get_corners(meta_lines):
@@ -45,18 +79,22 @@ def get_corners(meta_lines):
 			lr_long = float(row[-1])
 
 	# upper left corner 
+	ul_long,ul_lat = project_point(ul_long,ul_lat,3857)
 	ul_point = [ul_long,ul_lat,'ul']
 	corner_points.append(ul_point)
 
 	# upper right corner 
+	ur_long,ur_lat = project_point(ur_long,ur_lat,3857)
 	ur_point = [ur_long,ur_lat,'ur']
 	corner_points.append(ur_point)
 
 	# lower left corner 
+	ll_long,ll_lat = project_point(ll_long,ll_lat,3857)
 	ll_point = [ll_long,ll_lat,'ll']
 	corner_points.append(ll_point)
 
 	# lower right corner 
+	lr_long,lr_lat = project_point(lr_long,lr_lat,3857)
 	lr_point = [lr_long,lr_lat,'lr']
 	corner_points.append(lr_point)
 
@@ -92,6 +130,98 @@ def generate_points_wedges(number_of_points,point1,point2):
 		newlist.append([xcurrent,ycurrent])
 
 	newlist.append([x2,y2])
+
+	return newlist
+
+def distance2points(point1,point2):
+	# getting point1 lat andlong
+	long1,lat1 = [point1[0],point1[1]]
+
+	# getting point1 lat andlong
+	long2,lat2 = [point2[0],point2[1]]
+	
+	# calculating delta theta
+	theta = lat2 - lat1 
+	theta = radians(theta)
+
+	# calculating delta sigma
+	sig = long2 - long1
+	sig = radians(sig)
+
+	# converting to radians
+	lat1 = radians(lat1)
+	long1 =radians(long1)
+	lat2 = radians(lat2)
+	long2 = radians(long2)
+
+	# radius in meters
+	r = 6371000.0 # meters
+
+	a = (math.sin(theta/2) ** 2) + (math.cos(lat1) * math.cos(lat2) * math.sin(sig/2)**2)
+
+	c = 2 * math.atan2(a ** .5, (1 - a)**.5)
+
+	distance = r * c
+	return distance
+
+# given f ratio (the array positon betweeen the top and bottom point) divide by the total len() of the column
+# returns the x and y latitude and longitude
+def intermediate_point(f,sigma,point1,point2):
+	# getting point1 lat andlong
+	long1,lat1 = [point1[0],point1[1]]
+
+	# getting point1 lat andlong
+	long2,lat2 = [point2[0],point2[1]]
+
+	# converting to radians
+	lat1 = radians(lat1)
+	long1 =radians(long1)
+	lat2 = radians(lat2)
+	long2 = radians(long2)
+
+	# finding a  
+	a = math.sin((1 - f) * sigma) / math.sin(sigma)
+
+	# finding b 
+	b = math.sin(f * sigma) / math.sin(sigma)
+
+
+	x = (a * math.cos(lat1) * math.cos(long1)) + (b * math.cos(lat2) * math.cos(long2))
+	y = (a * math.cos(lat1) * math.sin(long1)) + (b * math.cos(lat2) * math.sin(long2))
+	z = (a * math.sin(lat1)) + (b * math.sin(lat2))
+
+	lat = math.atan2(z,(x**2 + y**2)**.5)
+	long = math.atan2(y,x)
+
+	x,y = degrees(long),degrees(lat)
+
+	return [x,y]
+
+# generating a set of points from the same inputs as generate_point_wedges
+# attempting to project differently and still function the same
+def generate_points_wedges2(number_of_points,point1,point2):
+	# getting distance
+	distance = distance2points(point1,point2)
+
+	# radius of the earthin meters
+	r = 6371000.0 # meters
+
+	# finding sigma
+	sigma = float(distance) / r
+
+	# setting up newlist and count
+	count = 0
+	newlist = [['LONG','LAT']]
+
+	# iterating through each point calculating the percentage of pixils or nparray rows completed
+	# as the percentage of circle traversed f
+	while not len(newlist) == number_of_points:
+		f = float(count) / float(number_of_points)
+		#print f,sigma
+		#raw_input()
+		point = intermediate_point(f,sigma,point1,point2)
+		count += 1
+		newlist.append(point)
 
 	return newlist
 
@@ -133,17 +263,17 @@ def generate_horizontal_ranges(corners,widthsize):
 	lowerright = getlatlong(header,corners[-1])
 
 	# getting the upper points with the edges 
-	upperpoints = generate_points_wedges(widthsize-2,upperleft,upperright)
+	upperpoints = generate_points_wedges2(widthsize-2,upperleft,upperright)
 
 	# getting bottom points 
-	bottompoints = generate_points_wedges(widthsize-2,lowerleft,lowerright)
+	bottompoints = generate_points_wedges2(widthsize-2,lowerleft,lowerright)
 
 	return [upperpoints,bottompoints]
 
 
 # generating points inbetween a set of top and bottom points 
 def generate_vertical_ranges(toppoint,bottompoint,heightsize):
-	points = generate_points_wedges(heightsize-2,toppoint,bottompoint)
+	points = generate_points_wedges2(heightsize-2,toppoint,bottompoint)
 	return points
 
 
@@ -463,11 +593,10 @@ def generate_point_range(dims,folder,extremadict):
 
 	y1 = generate_equilivalent2(extremadict['n'],dimmensiony,latmin,latmax,initialmax)
 	y2 = generate_equilivalent2(extremadict['s'],dimmensiony,latmin,latmax,initialmax)
-
 	return [x1,x2,y1,y2]
 
 # gets the rgb color band csv file for a pre-allocated tif band image file
-def generate_band_extrema(folder,extrema):
+def generate_band_extrema2(folder,extrema):
 	# getting image filenames 
 	images = get_images(folder)
 
@@ -548,3 +677,173 @@ def generate_band_extrema(folder,extrema):
 	newlist = newlist[(newlist.BLUE > 0)|(newlist.RED > 0)|(newlist.GREEN > 0)]
 	newlist.to_csv('point_band_tiff.csv',index = False)
 	return newlist
+
+# gets the rgb color band csv file for a pre-allocated tif band image file
+def generate_band_extrema(folder,extrema):
+	# getting image filenames 
+	images = get_images(folder)
+
+	# generating bands
+	bands = generate_bands(images)
+
+	# generating row and path 
+	row,path = generate_wrs_rowpath(folder)
+
+	# generating imageframes
+	imageframe = generate_rgb_array(images)
+	imageframe = imageframe[row*2:,path:-path]
+
+	# getting dims
+	dims = imageframe.shape
+
+	# generating indices for the extrema given
+	x1,x2,y1,y2 = generate_point_range(dims,folder,extrema)
+
+	# generating shape ranges (previously columns and indexs)
+	datacolumns = range(x1,x2)
+	dataindex = range(y1,y2)
+
+
+	
+	# setting up newlists header
+	header = ['X','Y','LONG','LAT','GEOHASH','RED','GREEN','BLUE']
+	newlist = [header]
+
+	# getting corner points
+	corners = generate_corners(folder)
+
+	# newcorners
+	ul_point = [extrema['w'],extrema['n'],'ul']
+	ur_point = [extrema['e'],extrema['n'],'ur']
+	ll_point = [extrema['w'],extrema['s'],'ll']
+	lr_point = [extrema['e'],extrema['s'],'lr']
+
+	newcorners = [['LONG','LAT','POS'],ul_point,ur_point,ll_point,lr_point]
+
+
+	# getting iterables of top and bottom points
+	toppoints,bottompoints = generate_horizontal_ranges(newcorners,len(datacolumns))
+
+	# creating generators for toppoints, bottompoints, and datacolumns
+	genertop = gener(toppoints[1:])
+	generbottom = gener(bottompoints[1:])
+	genercolumns = gener(datacolumns)
+
+	start = time.time()
+	toppoints = []
+	bottompoints =[]
+	datacolumns = []
+
+	indouter = 0 
+	while indouter == 0:
+		try:
+			# getting row position and setting up generator
+			x = next(genercolumns)
+			toppoint = next(genertop)
+			bottompoint = next(generbottom)
+
+			# setting up generator for index
+			generx = gener(dataindex)
+
+			# getting points horizontal and setting up generator
+			pointsindex = generate_vertical_ranges(toppoint,bottompoint,len(dataindex))
+
+			# setting up generator to iterate through the y values
+			generpoints = gener(pointsindex[1:])
+
+			# getting the size of points index
+			indexsize = len(pointsindex[1:])
+			pointsindex = []
+
+			ind = 0
+			while ind == 0:
+				try:
+					y = next(generx)
+					#print x,y
+					point = next(generpoints)
+					#print point
+					hash = geohash.encode(float(point[1]), float(point[0]),7)
+					values = generate_intensities3(imageframe,x,y).tolist()
+					newlist.append([x,y,point[0],point[1],hash]+values)
+				except StopIteration:
+					ind = 1
+					print '[%s/%s]' % (x,indexsize)
+		except StopIteration:
+			indouter = 1
+
+
+	newlist=bl.list2df(newlist)
+	newlist = newlist[(newlist.BLUE > 0)|(newlist.RED > 0)|(newlist.GREEN > 0)]
+	newlist.to_csv('point_band_tiff.csv',index = False)
+	return newlist
+
+# getting lat and long for each point
+def getlatlong(header,row):
+	count=0
+	oldrow=row
+	for row in header:
+		if 'lat' in str(row).lower():
+			latpos = count
+		elif 'long' in str(row).lower():
+			longpos = count
+		count+=1
+
+	lat = float(oldrow[latpos])
+	long = float(oldrow[longpos])
+
+	return [long,lat]
+
+
+
+# calculating the distance inbetween each point creates a square for each point 
+# constructs squares into a table maintaining data
+def make_squares_table(table):
+	# taking table to list
+	table = bl.df2list(table)
+
+	# getting header
+	header = table[0]
+
+	# getting first row 
+	firstrow = table[1]
+
+	# getting second row 
+	secondrow = table[2]
+
+	# getting point1 and point2
+	point1 = getlatlong(header,firstrow)
+	point2 = getlatlong(header,secondrow)
+
+	# settin up newlist with header header
+	newlist = [['GEOHASH','LAT1','LONG1','LAT2','LONG2','LAT3','LONG3','LAT4','LONG4','RED','GREEN','BLUE','COLORKEY']]
+
+
+
+	# getting distance
+	distance = (((point1[0] - point2[0]) ** 2) + ((point1[1] - point2[1]) ** 2)) ** .5
+
+	# iterating through each point to make squares
+	for row in table[1:]:
+		# getting point info to be added to square
+		pointinfo = row[-5:]
+
+		# getting point for each row
+		point = getlatlong(header,row)
+
+		# adding distance to get each corner point
+		ul_point = [point[0] - distance,point[1] + distance]
+		ur_point = [point[0] + distance,point[1] + distance]
+		bl_point = [point[0] - distance,point[1] - distance]
+		br_point = [point[0] + distance,point[1] - distance]
+
+		# making newrow
+		newrow = [pointinfo[0]] + [bl_point[1],bl_point[0]] + [br_point[1],br_point[0]] + [ul_point[1],ul_point[0]] + [ur_point[1],ur_point[0]] + pointinfo[1:]
+
+		newlist.append(newrow)
+
+	# taking newlist to dataframe again
+	newlist = bl.list2df(newlist)
+
+	return newlist
+
+
