@@ -1,6 +1,6 @@
 # raster_extract - Raster Extraction to point cloud / vector data for merged rgb band, tif files.
 
-**Below shows an output of dataframe generated in mapbox map. **
+*Below shows an output of dataframe generated in mapbox map.*
 ![](https://cloud.githubusercontent.com/assets/10904982/14758422/1ae709b2-08cf-11e6-9b03-edff3dc60a5a.png)
 
 Raster extract is a tool similiar to rasterio but was made with different use cases in mind like developing geospatial algorithms binding/fusing different data sets with or to raster data by using a pandas dataframe and a few functions for specific tasks. This is useful for things that require you to see and check a lot of i/o and can be integrate with other modules I've [created](https://github.com/murphy214/berrl) to view the output of a dataframe easily.
