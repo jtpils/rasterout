@@ -9,6 +9,12 @@ import geohash
 import pyproj
 from math import radians, degrees
 import math
+from rasterio.sample import sample_gen
+import rasterio
+from rasterio.rio.warp import warp
+from rasterio.rio import warp
+from rasterio.rio.main import main_group
+from click.testing import CliRunner
 
 
 # reads the metadata txt file into memory and splits into constituent lines
@@ -133,6 +139,7 @@ def generate_points_wedges(number_of_points,point1,point2):
 
 	return newlist
 
+
 def distance2points(point1,point2):
 	# getting point1 lat andlong
 	long1,lat1 = [point1[0],point1[1]]
@@ -225,6 +232,7 @@ def generate_points_wedges2(number_of_points,point1,point2):
 
 	return newlist
 
+
 # getting lat and long for each point
 def getlatlong(header,row):
 	count=0
@@ -240,6 +248,7 @@ def getlatlong(header,row):
 	long = float(oldrow[longpos])
 
 	return [long,lat]
+
 
 # generating bottom and top points between left and right corners
 # for top and bottum respectively 
@@ -277,7 +286,6 @@ def generate_vertical_ranges(toppoint,bottompoint,heightsize):
 	return points
 
 
-
 # gets all images in a directory 
 # except image b8 as its a different resolution
 def get_images(dir):
@@ -289,6 +297,27 @@ def get_images(dir):
 			new_images.append(row)
 	return new_images
 
+def reduce_extrema(extema):
+	deltalat = extrema['n'] - extrema['s'] 
+ 	deltalat = extrema['e'] - extrema['w']
+
+ 	fromcentroidlat = (deltalat/2.0) * .9
+ 	fromcentroidlong = (deltalong/2.0) * .9
+
+ 	centroidlat = (extrema['n'] + extrema['s']) / 2.0
+ 	centroidlong = (extrema['e'] + extrema['w']) / 2.0
+
+ 	north = centroidlat + fromcentroidlat
+ 	south = centroidlat - fromcentroidlat
+
+ 	east = centroidlong + fromcentroidlong
+ 	west = centroidlong - fromcentroidlong
+
+
+ 	extrema = {'n':north,'s':south,'e':east,'w':west}
+
+
+ 
 # from a list of images returns the bands index in a list for each band possible
 # this list will be added to the header value
 def generate_bands(images):
@@ -342,17 +371,12 @@ def generate_imageframe_single(filename):
 # with the appropriate index and column labels 
 def generate_imageframes_rgb(filename):
 	imageframes = []
-	print filename
 
 	if len(filename) == 1:
 		filename = filename[0]
 
-
-
-	# reading tif image into memory and turning into numpy array
-	im = Image.open(filename)
-	imarray = np.array(im)
-	
+	imarray = generate_rgb_array(filename)
+		
 	# splitting the array into 3 constituent np array 
 	# representing colors colors blue,green,red
 	imarray = np.dsplit(imarray, 3)
@@ -395,9 +419,12 @@ def generate_rgb_array(filename):
 
 	# reading tif image into memory and turning into numpy array
 	im = Image.open(filename)
-	imarray = np.array(im)	
+	im.load()
+	imarray = np.array(im)
+	print np.unique(np.dsplit(imarray,3)[0]),np.unique(np.dsplit(imarray,3)[1]),np.unique(np.dsplit(imarray,3)[2])
 
 	return imarray
+
 
 # given a point x,y in an array and a dataframe returns a intensity value
 def get_point(data,x,y):
@@ -503,7 +530,6 @@ def generate_band(folder):
 					newlist.append([x,y,point[0],point[1],hash]+values)
 				except StopIteration:
 					ind = 1
-					print '[%s/%s]' % (x,indexsize)
 		except StopIteration:
 			indouter = 1
 
@@ -583,38 +609,99 @@ def generate_point_range(dims,folder,extremadict):
 	longmin,longmax = corners['LONG'].min(),corners['LONG'].max()
 	dimmensionx = dims[1]
 
+	# getting min latsand translating to index values
+	latmin,latmax = corners['LAT'].min(),corners['LAT'].max()
+	dimmensiony = dims[0]
+
+
+	# converting minimum point and maximum point
+	longmin,latmin = project_point(longmin,latmin,3857)
+	longmax,latmax = project_point(longmax,latmax,3857)
+
 	# getting range that extrema dict falls within
 	x1 = generate_equilivalent(extremadict['w'],dimmensionx,longmin,longmax)
 	x2 = generate_equilivalent(extremadict['e'],dimmensionx,longmin,longmax)
 
-	# getting min latsand translating to index values
-	latmin,latmax = corners['LAT'].min(),corners['LAT'].max()
-	dimmensiony = dims[0]
 
 	y1 = generate_equilivalent2(extremadict['n'],dimmensiony,latmin,latmax,initialmax)
 	y2 = generate_equilivalent2(extremadict['s'],dimmensiony,latmin,latmax,initialmax)
 	return [x1,x2,y1,y2]
 
+
+def transform_raster_tif(srcname,dimensions):
+	""" Constructs parameters to execute the script to convert a tiff file
+	to contain geospatial info.
+    Parameters
+    ----------
+    srcname: filename-location of tif file
+    dimensions: 2d list of the size of x and y in image file given
+    Returns
+    -------
+    out : writes output tif file to location based on input name.
+        none
+    Notes
+    -----
+    """
+    # instantiating runner 
+	runner = CliRunner()
+
+	# getting the dimensions from the dimensions list given
+	dim1 = dimensions[0]
+	dim2 = dimensions[1]
+
+	# getting output filename from the srcfilename
+	outputname = str.split(srcname,'.')[0]+str('_output.tif')
+
+	# executes the command to conver the tif from the arguments given
+	result = runner.invoke(main_group, [
+    	'warp', srcname, outputname, '--dimensions',str(dim1), str(dim2),'--dst-crs','EPSG:4326'])
+
+
 # gets the rgb color band csv file for a pre-allocated tif band image file
-def generate_band_extrema2(folder,extrema):
+def make_image_output2(folder,extrema,filename,**kwargs):
+	csvfile = False
+	for key,value in kwargs.iteritems():
+		if key == 'csvfilename':
+			csvfilename = str(value)
+
+	# setting an inital assumed outfilename
+	outfilename = 'output.csv'
+
+	# setting outname to given csv filenaem
+	if not csvfile == False:
+		outfilename = csvfilename
+
 	# getting image filenames 
 	images = get_images(folder)
 
+	# overwriting images just generated for metafile
+	# to read image from location
+	image = filename
+
 	# generating bands
-	bands = generate_bands(images)
+	bands = generate_bands(image)
+
+	# generating row and path 
+	row,path = generate_wrs_rowpath(folder)
 
 	# generating imageframes
-	imageframe = generate_rgb_array(images)
+	imageframe = generate_rgb_array(image)
+	imageframe = imageframe#[path*2:,row*2:]
 
-	# generating shape ranges (previously columns and indexs)
+
+	# getting imageframe2 for the outer dimmension
+	#imageframe = generate_rgb_array(images[0])
+
+	# getting dims
 	dims = imageframe.shape
-	datacolumns = range(0,dims[1])
-	dataindex = range(0,dims[0])
-
 
 	# generating indices for the extrema given
-	x1,x2,y1,y2 = generate_point_range(dims,folder,extrema)
-	print x1,x2,y1,y2
+	x1,x2,y1,y2 = generate_point_range_extrema(dims,extrema)
+
+
+	# generating shape ranges (previously columns and indexs)
+	datacolumns = range(0,dims[1])
+	dataindex = range(0,dims[0])
 
 	# setting up newlists header
 	header = ['X','Y','LONG','LAT','GEOHASH','RED','GREEN','BLUE']
@@ -623,13 +710,36 @@ def generate_band_extrema2(folder,extrema):
 	# getting corner points
 	corners = generate_corners(folder)
 
+	# newcorners
+	ul_point = [extrema['w'],extrema['n'],'ul']
+	ur_point = [extrema['e'],extrema['n'],'ur']
+	ll_point = [extrema['w'],extrema['s'],'ll']
+	lr_point = [extrema['e'],extrema['s'],'lr']
+
+	newcorners = [['LONG','LAT','POS'],ul_point,ur_point,ll_point,lr_point]
+
+	# checking to see if an image output transformed tif exists 
+	# if none exists calls the bash command to produce tif with geospatial information
+	src = rasterio.open(filename)
+	print src
+	'''
+	output_filename = str.split(images[0],'.')[0] + '_output.tif'
+	
+	# try-accept block to attempt to open image src to prevent
+	# executing the convert script if a converted image already exists
+	try:
+		src = rasterio.open(output_filename)
+	except IOError:
+		transform_raster_tif(images[0],[dims[1],dims[0]])
+		src = rasterio.open(output_filename)
+	'''
 	# getting iterables of top and bottom points
-	toppoints,bottompoints = generate_horizontal_ranges(corners,len(datacolumns))
+	toppoints,bottompoints = generate_horizontal_ranges(newcorners,len(datacolumns))
 
 	# creating generators for toppoints, bottompoints, and datacolumns
-	genertop = gener(toppoints[1+x1:1+x2])
-	generbottom = gener(bottompoints[1+x1:1+x2])
-	genercolumns = gener(datacolumns[x1:x2])
+	genertop = gener(toppoints[1:])
+	generbottom = gener(bottompoints[1:])
+	genercolumns = gener(datacolumns)
 
 	start = time.time()
 	toppoints = []
@@ -651,19 +761,23 @@ def generate_band_extrema2(folder,extrema):
 			pointsindex = generate_vertical_ranges(toppoint,bottompoint,len(dataindex))
 
 			# setting up generator to iterate through the y values
-			generpoints = gener(pointsindex[1+y1:1+y2])
+			generpoints = gener(pointsindex[1:])
+			genersamplegen = sample_gen(src,pointsindex[1:])
+
 
 			# getting the size of points index
-			indexsize = len(pointsindex[1+y1:1+y2])
+			indexsize = len(pointsindex[1:])
 			pointsindex = []
 
 			ind = 0
 			while ind == 0:
 				try:
 					y = next(generx)
+					#print x,y
 					point = next(generpoints)
+					#print point
 					hash = geohash.encode(float(point[1]), float(point[0]),7)
-					values = generate_intensities3(imageframe,x,y).tolist()
+					values = next(genersamplegen).tolist()
 					newlist.append([x,y,point[0],point[1],hash]+values)
 				except StopIteration:
 					ind = 1
@@ -671,46 +785,127 @@ def generate_band_extrema2(folder,extrema):
 		except StopIteration:
 			indouter = 1
 
-
 	newlist=bl.list2df(newlist)
-	print newlist
-	newlist = newlist[(newlist.BLUE > 0)|(newlist.RED > 0)|(newlist.GREEN > 0)]
-	newlist.to_csv('point_band_tiff.csv',index = False)
+	newlist.to_csv(outfilename,index = False)
 	return newlist
 
+# generates a list of corners in a format like the original 
+# generate corners, meaning data frame lat,longs
+def generate_corners_metadata(filename,csvmetadata):
+	# getting only the filename column poriton of the metadata file
+	filename = str.split(filename,'.')[0]
+	if '/' in str(filename):
+		filename = str.split(filename,'/')[-1]
+	
+	# getting only the row associated with filename
+	metarow = csvmetadata[csvmetadata.FILENAME == filename]
+
+	# taking the data frame row to list
+	metarow = metarow.values.tolist()[0]
+
+	# getting the metadata header
+	header = bl.df2list(csvmetadata)[0]
+
+	# iterating through both the header and row to collect
+	# both lat and longs
+	lats = []
+	longs = []
+	for headval,rowval in itertools.izip(header,metarow):
+		if 'lat' in str(headval).lower():
+			lats.append(rowval)
+		if 'long' in str(headval).lower():
+			longs.append(rowval)
+
+	# iterating through lat/longs and putting into list
+	corners = [['LONG','LAT']]
+	for long,lat in itertools.izip(longs,lats):
+		corners.append([long,lat])
+
+	return corners
+
+# generates corner poitns 
+def generate_point_range_extrema(dims,extremadict):
+	# getting dimmension x and y 
+	dimmensionx = dims[1]
+	dimmensiony = dims[0]
+
+
+	latmax,latmin,longmax,longmin = [extremadict['n'],extremadict['s'],extremadict['e'],extremadict['w']]
+	initialmax = latmax
+
+
+	# converting minimum point and maximum point
+	longmin,latmin = project_point(longmin,latmin,3857)
+	longmax,latmax = project_point(longmax,latmax,3857)
+
+	# getting range that extrema dict falls within
+	x1 = generate_equilivalent(extremadict['w'],dimmensionx,longmin,longmax)
+	x2 = generate_equilivalent(extremadict['e'],dimmensionx,longmin,longmax)
+
+
+	y1 = generate_equilivalent2(extremadict['n'],dimmensiony,latmin,latmax,initialmax)
+	y2 = generate_equilivalent2(extremadict['s'],dimmensiony,latmin,latmax,initialmax)
+	return [x1,x2,y1,y2]
+
+
+# given a rbg filename and an extrema returns corresponding rows and points for 
+# for values that lie within extrema for the image in question
+def generate_point_range_metadata(dims,extremadict,filename,csvmetadata):
+	# getting corners 
+	corners = generate_corners_metadata(filename,csvmetadata)
+	initialmax = corners[1]
+	initialmax = initialmax[1]
+
+	# getting min longs  and translating column values
+	corners = pd.DataFrame(corners[1:],columns = corners[0])
+	longmin,longmax = corners['LONG'].min(),corners['LONG'].max()
+	dimmensionx = dims[1]
+
+	# getting min latsand translating to index values
+	latmin,latmax = corners['LAT'].min(),corners['LAT'].max()
+	dimmensiony = dims[0]
+
+
+	# converting minimum point and maximum point
+	longmin,latmin = project_point(longmin,latmin,3857)
+	longmax,latmax = project_point(longmax,latmax,3857)
+
+	# getting range that extrema dict falls within
+	x1 = generate_equilivalent(extremadict['w'],dimmensionx,longmin,longmax)
+	x2 = generate_equilivalent(extremadict['e'],dimmensionx,longmin,longmax)
+
+
+	y1 = generate_equilivalent2(extremadict['n'],dimmensiony,latmin,latmax,initialmax)
+	y2 = generate_equilivalent2(extremadict['s'],dimmensiony,latmin,latmax,initialmax)
+	return [x1,x2,y1,y2]
+
 # gets the rgb color band csv file for a pre-allocated tif band image file
-def generate_band_extrema(folder,extrema):
-	# getting image filenames 
-	images = get_images(folder)
+def make_image_output(filename,csvmetadata,extrema,**kwargs):
+	outputcsvfile = 'tif_output.csv'
+	for key,value in kwargs.iteritems():
+		if key == 'outputcsvfile':
+			outputcsvfile = str(value)
 
 	# generating bands
-	bands = generate_bands(images)
-
-	# generating row and path 
-	row,path = generate_wrs_rowpath(folder)
+	bands = generate_bands([filename])
 
 	# generating imageframes
-	imageframe = generate_rgb_array(images)
-	imageframe = imageframe[row*2:,path:-path]
+	imageframe = generate_rgb_array([filename])
+	imageframe = imageframe#[path*2:,row*2:]
 
 	# getting dims
 	dims = imageframe.shape
 
 	# generating indices for the extrema given
-	x1,x2,y1,y2 = generate_point_range(dims,folder,extrema)
+	x1,x2,y1,y2 = generate_point_range_metadata(dims,extrema,filename,csvmetadata)
 
 	# generating shape ranges (previously columns and indexs)
 	datacolumns = range(x1,x2)
 	dataindex = range(y1,y2)
 
-
-	
 	# setting up newlists header
 	header = ['X','Y','LONG','LAT','GEOHASH','RED','GREEN','BLUE']
 	newlist = [header]
-
-	# getting corner points
-	corners = generate_corners(folder)
 
 	# newcorners
 	ul_point = [extrema['w'],extrema['n'],'ul']
@@ -719,6 +914,23 @@ def generate_band_extrema(folder,extrema):
 	lr_point = [extrema['e'],extrema['s'],'lr']
 
 	newcorners = [['LONG','LAT','POS'],ul_point,ur_point,ll_point,lr_point]
+
+	'''
+	# checking to see if an image output transformed tif exists 
+	# if none exists calls the bash command to produce tif with geospatial information
+	output_filename = str.split(images[0],'.')[0] + '_output.tif'
+	
+	# try-accept block to attempt to open image src to prevent
+	# executing the convert script if a converted image already exists
+	try:
+		src = rasterio.open(output_filename)
+	except IOError:
+		transform_raster_tif(images[0],[dims[1],dims[0]])
+		src = rasterio.open(output_filename)
+	'''
+	
+	# instantiating the source tif file
+	src = rasterio.open(filename)
 
 
 	# getting iterables of top and bottom points
@@ -750,6 +962,8 @@ def generate_band_extrema(folder,extrema):
 
 			# setting up generator to iterate through the y values
 			generpoints = gener(pointsindex[1:])
+			genersamplegen = sample_gen(src,pointsindex[1:])
+
 
 			# getting the size of points index
 			indexsize = len(pointsindex[1:])
@@ -763,18 +977,18 @@ def generate_band_extrema(folder,extrema):
 					point = next(generpoints)
 					#print point
 					hash = geohash.encode(float(point[1]), float(point[0]),7)
-					values = generate_intensities3(imageframe,x,y).tolist()
+					values = next(genersamplegen).tolist()
+					print values
 					newlist.append([x,y,point[0],point[1],hash]+values)
 				except StopIteration:
 					ind = 1
-					print '[%s/%s]' % (x,indexsize)
 		except StopIteration:
 			indouter = 1
 
 
 	newlist=bl.list2df(newlist)
 	newlist = newlist[(newlist.BLUE > 0)|(newlist.RED > 0)|(newlist.GREEN > 0)]
-	newlist.to_csv('point_band_tiff.csv',index = False)
+	newlist.to_csv(outputcsvfile,index = False)
 	return newlist
 
 # getting lat and long for each point
@@ -792,7 +1006,6 @@ def getlatlong(header,row):
 	long = float(oldrow[longpos])
 
 	return [long,lat]
-
 
 
 # calculating the distance inbetween each point creates a square for each point 
@@ -815,9 +1028,7 @@ def make_squares_table(table):
 	point2 = getlatlong(header,secondrow)
 
 	# settin up newlist with header header
-	newlist = [['GEOHASH','LAT1','LONG1','LAT2','LONG2','LAT3','LONG3','LAT4','LONG4','RED','GREEN','BLUE','COLORKEY']]
-
-
+	newlist = [['GEOHASH','LAT1','LONG1','LAT2','LONG2','LAT3','LONG3','LAT4','LONG4','X','Y','RED','GREEN','BLUE','COLORKEY']]
 
 	# getting distance
 	distance = (((point1[0] - point2[0]) ** 2) + ((point1[1] - point2[1]) ** 2)) ** .5
@@ -830,6 +1041,7 @@ def make_squares_table(table):
 		# getting point for each row
 		point = getlatlong(header,row)
 
+
 		# adding distance to get each corner point
 		ul_point = [point[0] - distance,point[1] + distance]
 		ur_point = [point[0] + distance,point[1] + distance]
@@ -837,7 +1049,7 @@ def make_squares_table(table):
 		br_point = [point[0] + distance,point[1] - distance]
 
 		# making newrow
-		newrow = [pointinfo[0]] + [bl_point[1],bl_point[0]] + [br_point[1],br_point[0]] + [ul_point[1],ul_point[0]] + [ur_point[1],ur_point[0]] + pointinfo[1:]
+		newrow = [pointinfo[0]] + [bl_point[1],bl_point[0]] + [br_point[1],br_point[0]] + [ul_point[1],ul_point[0]] + [ur_point[1],ur_point[0]] + [row[0],row[1]] +pointinfo[1:]
 
 		newlist.append(newrow)
 
@@ -845,5 +1057,107 @@ def make_squares_table(table):
 	newlist = bl.list2df(newlist)
 
 	return newlist
+
+# gets extrema for a given metadata header and list
+def get_extrema_metadata(header,row):
+	lats = []
+	longs = []
+	for a,b in itertools.izip(header,row):
+		if 'LAT' in a:
+			lats.append(b)
+		elif 'LONG' in a:
+			longs.append(b)
+
+
+	latmin,latmax = get_min(lats),get_max(lats)
+	longmin,longmax = get_min(longs),get_max(longs)
+
+	extremadict = {'n':latmax,'s':latmin,'w':longmin,'e':longmax}
+
+	return extremadict
+
+
+# takes an input directory containing output tif files 
+# and a metadata dataframe and writes csv file corresponding to each image in the
+# the directory 
+def make_output_csvs(dir,metadata):
+    metadataframe = metadata
+
+    # taking meta data file to list
+    if isinstance(metadata,pd.DataFrame):
+        metadata = bl.df2list(metadata)
+
+    # getting header value
+    header = metadata[0]
+    count = 0
+    for row in metadata[1:]:
+    	count += 1
+        # getting the extrema values in each row
+        extrema = get_extrema_metadata(header,row)
+
+        # getting filename
+        filename = dir + '/' + row[0] + '.tif'
+
+        # from the arguments compiles makes the csv output 
+        try:
+            make_image_output(filename,metadataframe,extrema,outputcsvfile=dir+'/'+row[0]+'.csv')
+        except IOError:
+            print 'out'
+       	print 'Task:%s,Completed:%s' % (count,filename)
+
+'''
+data = pd.read_csv('tif_output.csv')
+numberofsplits = 6
+mins,maxs,data,numberofsplits = [[0,0],[data.X.max(),data.Y.max()],data,numberofsplits]
+'''
+# given min x and ys and max x and ys creates ranges of each partitons split
+def make_split_ranges(mins,maxs,data,numberofsplits):
+	deltax = (maxs[0] - mins[0])/numberofsplits
+	deltay = (maxs[1] - mins[1])/numberofsplits
+	currentx = 0
+	currenty = 0
+	xsplits  = [currentx]
+	ysplits = [currenty]
+	print xsplits,ysplits
+	while not len(xsplits)== numberofsplits + 1 and not len(ysplits) == numberofsplits + 1:
+		currentx += deltax
+		currenty += deltay
+		xsplits.append(currentx)
+		ysplits.append(currenty)
+
+	xsplits[-1:].append(data.X.max())
+	ysplits[-1:].append(data.Y.max())
+	ranges = []
+	for a,b in itertools.izip(xsplits,ysplits):
+		ranges.append([a,b])
+	print ranges
+
+
+	arglist = []
+	count = 0
+	for row in ranges:
+		if count == 0:
+			count = 1
+		else:
+
+			point1 = row
+
+			print row
+
+			temp = data[ ((data.X > point1[1]) & (data.X <= point2[0])) & ( ( data.Y < point1[1]) & (data.Y <= point2[1]) ) ]
+			print oldrow,row
+			arglist.append([point1,point2,temp])
+		oldrow = row
+		point2 = oldrow
+	return arglist
+'''
+print make_split_ranges(mins,maxs,data,numberofsplits)[-1]
+'''
+# number of splits about one axis
+def split_raster_creation_spark(extrema,numberofsplits):
+	make_spark_args_blocks()
+
+
+
 
 
