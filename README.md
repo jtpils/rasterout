@@ -1,4 +1,3 @@
-# Doing things RasterIO should Do
 
 *Below shows an output of dataframe generated in mapbox map.*
 ![](https://cloud.githubusercontent.com/assets/10904982/16713217/24789ef0-466e-11e6-97ab-1bbf53204d09.png)
