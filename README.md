@@ -2,10 +2,6 @@
 *Below shows an output of dataframe generated in mapbox map.*
 ![](https://cloud.githubusercontent.com/assets/10904982/16713217/24789ef0-466e-11e6-97ab-1bbf53204d09.png)
 
-# Yt video link below of a short demo
-[Short Demonstration](https://www.youtube.com/watch?v=RSd3Sol44Sw)
-
-
 Basically this module was written on top of rasterio and uses a series of pandas operations to create pixel polygons geometries along with their color outputs, so that it can be sent into a function from another project which parses the dataframe into geojson features which can than be dynamically displayed. Still a hackish implementation but better than the previous iteration. 
 
 
@@ -13,24 +9,17 @@ Basically this module was written on top of rasterio and uses a series of pandas
 
 
 ```python 
-import berrl as bl
 import pandas as pd
-from pandas_sparse import *
+import raster_out 
 import numpy as np
 
 # making a dataframe of all pixels in the image
-mapdf = make_dfmap('b.TIF')
+mapdf = raster_out.make_dfmap('b.TIF')
 print mapdf
 
 # making all the pixels into a geojson file
 bl.make_blocks(mapdf[:10000],list=True,filename='blocks.geojson',bounds=True)
 
-# making a file dictionary object used to parse the html/js
-file_dictionary = bl.make_file_dict('blocks.geojson',mapdf,['GEOHASH'],slider_fields=['RED','GREEN','BLUE'],zooms=[10,20])
-
-# loading map based on inputs 
-bl.loadparsehtml(bl.collect(),True,file_dictionary=file_dictionary,sidebar=True,bounds=True,colorkey='COLORKEY')
-bl.loadparsehtml(['blocks.geojson'],True,colorkey=True)
 '''
 OUTPUT:
            X      Y  RED  GREEN  BLUE       LAT1       LONG1       LAT2  \
